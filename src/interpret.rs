@@ -4,8 +4,11 @@
 //! stays a pair. Four readings become three. The card always keeps a row
 //! where the person can say which one they meant.
 
+use std::path::Path;
+
 use serde_json::Value;
 
+use crate::context;
 use crate::grok;
 
 /// A reading this sure, and this far ahead of the next, is shown alone.
@@ -24,25 +27,45 @@ pub struct Choice {
     pub confidence: f64,
 }
 
-pub fn ask(
+pub fn ask(request: &str, notes: &[String], previous: &[Choice]) -> Result<Vec<Choice>, String> {
+    let dir = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    converse(&dir, request, notes, previous, grok::complete)
+}
+
+/// Ask, and when the reply names a missing fact, look it up and ask once more.
+fn converse(
+    dir: &Path,
     request: &str,
-    context: &str,
     notes: &[String],
     previous: &[Choice],
+    mut reply: impl FnMut(&str, &str) -> Result<String, String>,
 ) -> Result<Vec<Choice>, String> {
     let system = system_prompt();
-    let user = user_message(request, context, notes, previous);
-    let first = grok::complete(&system, &user)?;
-    match classify(&first) {
-        Class::Choices(choices) if !choices.is_empty() => Ok(choices),
-        Class::Model(message) => Err(message),
-        Class::Choices(_) | Class::Bad => {
-            let second = grok::complete(&system, &repair_message(&user, &first))?;
-            match classify(&second) {
-                Class::Choices(choices) if !choices.is_empty() => Ok(choices),
-                Class::Model(message) => Err(message),
-                Class::Choices(_) | Class::Bad => Err("Grok did not return a command.".into()),
+    let mut dossier = context::Dossier::capture_in(dir, request, notes);
+    let mut repairs = 0;
+    let mut needs = 0;
+    loop {
+        let user = user_message(request, &dossier.text(), notes, previous);
+        let raw = reply(&system, &user)?;
+        match classify(&raw) {
+            Class::Choices(choices) if !choices.is_empty() => return Ok(choices),
+            Class::Need(ids) if needs < 2 && dossier.grant(&ids) => {
+                needs += 1;
             }
+            Class::Model(message) => return Err(message),
+            _ if repairs < 1 => {
+                repairs += 1;
+                let second = reply(&system, &repair_message(&user, &raw))?;
+                match classify(&second) {
+                    Class::Choices(choices) if !choices.is_empty() => return Ok(choices),
+                    Class::Need(ids) if needs < 2 && dossier.grant(&ids) => {
+                        needs += 1;
+                    }
+                    Class::Model(message) => return Err(message),
+                    _ => return Err("Grok did not return a command.".into()),
+                }
+            }
+            _ => return Err("Grok did not return a command.".into()),
         }
     }
 }
@@ -68,9 +91,11 @@ Return one option when the request has one natural command, and give it a high c
 Return two or three when a careful person could mean different commands. Three is the maximum. Give those a close, lower confidence.
 Never return more than three.
 
-\"merge A into B\" does not say whether A should be deleted afterwards. Offer both the merge that keeps A, and the merge that deletes A, unless the words already say which.
+\"merge A into B\" does not say whether A should be deleted afterwards. When A is a local branch, offer both the merge that keeps A and the merge that deletes A, unless the words already say which. When A has no local branch, offer the one merge and do not delete a remote branch. When several remote-tracking branches match and none is local, offer one reading for each of those names, and no delete.
 
-Use the local context when it names a branch, the current directory, or the current branch. If they are already on the branch a checkout would switch to, leave the checkout out.
+Use the local context. A branch, file, script, or tool in the command has to be a name the context gives. When it says \"Use the name origin/dev\", the command uses origin/dev. When it says to leave a checkout out, leave it out. If a command is not on the On PATH line, it was not found. Prefer one that is listed when either would do.
+
+If that is not enough to name a real branch, file, script, or tool, do not guess. Reply with {\"need\":[\"id\"]} and nothing else. The ids have to be copied from \"You can ask for\". Ask for everything this request needs in that one object.
 
 Join steps with && so a later step does not run after an earlier one fails.
 Do not add sudo, force, reset --hard, clean, or a delete unless the request asks for that effect, or that effect is the extra reading of an ambiguous request. When you offer the destructive reading, say so in the detail.
@@ -81,7 +106,12 @@ If the request is not a shell command, return {\"options\":[],\"error\":\"one se
 Examples of the shape, not commands to copy onto a different request:
 
 Request: git command to merge dev into test
+When dev and test are local branches and test is not the current branch:
 {\"options\":[{\"title\":\"merge into test\",\"detail\":\"brings dev's commits into test and keeps dev\",\"command\":\"git checkout test && git merge dev\",\"confidence\":0.46},{\"title\":\"merge and delete dev\",\"detail\":\"merges into test, then deletes the dev branch\",\"command\":\"git checkout test && git merge dev && git branch -d dev\",\"confidence\":0.44}]}
+
+Request: git command to merge dev into test
+When the context says dev has no local branch and to use origin/dev, and test is the current branch:
+{\"options\":[{\"title\":\"merge into test\",\"detail\":\"brings origin/dev into the current branch\",\"command\":\"git merge origin/dev\",\"confidence\":0.9}]}
 
 Request: print the working directory
 {\"options\":[{\"title\":\"print the directory\",\"detail\":\"prints the working directory\",\"command\":\"pwd\",\"confidence\":0.95}]}
@@ -128,8 +158,10 @@ fn repair_message(user: &str, previous: &str) -> String {
     )
 }
 
+#[derive(Debug)]
 enum Class {
     Choices(Vec<Choice>),
+    Need(Vec<String>),
     Model(String),
     Bad,
 }
@@ -141,6 +173,15 @@ fn classify(raw: &str) -> Class {
     let Ok(doc) = serde_json::from_str::<Value>(json) else {
         return Class::Bad;
     };
+    if let Some(ids) = need_ids(&doc) {
+        let options_empty = doc
+            .get("options")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty);
+        if options_empty && !ids.is_empty() {
+            return Class::Need(ids);
+        }
+    }
     let Some(items) = doc.get("options").and_then(Value::as_array) else {
         return model_or_bad(&doc);
     };
@@ -183,6 +224,30 @@ fn classify(raw: &str) -> Class {
         })
         .collect();
     Class::Choices(select_shown(choices))
+}
+
+fn need_ids(doc: &Value) -> Option<Vec<String>> {
+    let raw = match doc.get("need")? {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect(),
+        _ => return None,
+    };
+    let ids = raw
+        .into_iter()
+        .map(|id| id.trim().to_ascii_lowercase())
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 40
+                && id
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
+        })
+        .take(8)
+        .collect();
+    Some(ids)
 }
 
 fn model_or_bad(doc: &Value) -> Class {
@@ -408,6 +473,9 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("branch -d dev"), "{prompt}");
+        assert!(prompt.contains("origin/dev"), "{prompt}");
+        assert!(prompt.contains("no local branch"), "{prompt}");
+        assert!(prompt.contains("\"need\""), "{prompt}");
     }
 
     #[test]
@@ -431,7 +499,96 @@ mod tests {
         match classify(raw) {
             Class::Choices(choices) if !choices.is_empty() => Ok(choices),
             Class::Model(message) => Err(message),
-            Class::Choices(_) | Class::Bad => Err("Grok did not return a command.".into()),
+            Class::Choices(_) | Class::Need(_) | Class::Bad => {
+                Err("Grok did not return a command.".into())
+            }
         }
+    }
+
+    #[test]
+    fn a_need_is_not_a_command_and_a_string_id_counts() {
+        match classify(r#"{"need":["files.here"]}"#) {
+            Class::Need(ids) => assert_eq!(ids, vec!["files.here".to_string()]),
+            other => panic!("expected a request for context, got {other:?}"),
+        }
+        match classify(r#"{"need":"git.status"}"#) {
+            Class::Need(ids) => assert_eq!(ids, vec!["git.status".to_string()]),
+            other => panic!("expected a request for context, got {other:?}"),
+        }
+        assert!(parse_reading(r#"{"need":["files.here"]}"#).is_err());
+    }
+
+    #[test]
+    fn a_follow_up_fact_is_sent_back_before_the_command_is_accepted() {
+        let dir = std::env::temp_dir().join(format!(
+            "aicmd-ask-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("notes.txt"), "hi\n").unwrap();
+        let mut calls = 0;
+        let result = converse(&dir, "show the notes", &[], &[], |_, user| {
+            calls += 1;
+            if calls == 1 {
+                assert!(
+                    user.contains("You can ask for:"),
+                    "the first reply can ask for a fact:\n{user}"
+                );
+                assert!(
+                    !user.contains("notes.txt"),
+                    "file names wait until they are asked for:\n{user}"
+                );
+                Ok(r#"{"need":["files.here"]}"#.into())
+            } else {
+                assert!(user.contains("notes.txt"), "{user}");
+                assert!(
+                    !user.contains("files.here —"),
+                    "an answered probe leaves the menu:\n{user}"
+                );
+                Ok(r#"{"options":[{"title":"show the notes","detail":"prints notes.txt","command":"cat notes.txt","confidence":0.9}]}"#.into())
+            }
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        let shown = result.expect("a command");
+        assert_eq!(calls, 2);
+        assert_eq!(shown[0].command, "cat notes.txt");
+    }
+
+    #[test]
+    fn an_unknown_fact_does_not_get_asked_forever() {
+        let dir = std::env::temp_dir().join(format!("aicmd-ask-unknown-{}", std::process::id()));
+        let _ = std::fs::create_dir(&dir);
+        let mut calls = 0;
+        let result = converse(&dir, "print the working directory", &[], &[], |_, _| {
+            calls += 1;
+            assert!(calls < 6, "the follow-up loop did not stop");
+            Ok(r#"{"need":["nope"]}"#.into())
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+        assert!(calls <= 4, "calls: {calls}");
+    }
+
+    #[test]
+    fn a_reply_that_is_not_json_is_repaired_once() {
+        let dir = std::env::temp_dir().join(format!("aicmd-ask-repair-{}", std::process::id()));
+        let _ = std::fs::create_dir(&dir);
+        let mut calls = 0;
+        let shown = converse(&dir, "print the working directory", &[], &[], |_, user| {
+            calls += 1;
+            if calls == 1 {
+                Ok("sure, pwd".into())
+            } else {
+                assert!(user.contains("could not be read"), "{user}");
+                Ok(r#"{"options":[{"title":"print the directory","detail":"prints the working directory","command":"pwd","confidence":0.95}]}"#.into())
+            }
+        })
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(calls, 2);
+        assert_eq!(shown[0].command, "pwd");
     }
 }

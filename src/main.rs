@@ -203,7 +203,9 @@ mod tests {
             script.contains("https://github.com/uxeric/ai-command.git"),
             "{script}"
         );
-        assert!(script.contains("https://raw.githubusercontent.com/uxeric/ai-command/HEAD/install.sh"));
+        assert!(
+            script.contains("https://raw.githubusercontent.com/uxeric/ai-command/HEAD/install.sh")
+        );
         assert!(script.contains("cmd.zsh"));
         assert!(script.contains("--uninstall"));
         assert!(script.contains("installed-rev"));

@@ -23,7 +23,6 @@ use ratatui::Frame;
 use ratatui::Terminal;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::context;
 use crate::interpret::{self, Choice};
 use crate::motion::Motion;
 use crate::style::ink;
@@ -64,14 +63,12 @@ struct Confirm {
 }
 
 struct Loaded {
-    context: String,
     result: Result<Vec<Choice>, String>,
 }
 
 struct App {
     request: String,
     view: View,
-    context: Option<String>,
     notes: Vec<String>,
     previous: Vec<Choice>,
     pending: Option<Receiver<Loaded>>,
@@ -295,7 +292,7 @@ impl Session {
 impl App {
     fn start(request: &str) -> Self {
         let request = request.to_string();
-        let pending = Some(spawn(request.clone(), None, Vec::new(), Vec::new()));
+        let pending = Some(spawn(request.clone(), Vec::new(), Vec::new()));
         let shown = request.clone();
         Self {
             request,
@@ -310,7 +307,6 @@ impl App {
                 frame: 0,
                 notice: None,
             },
-            context: None,
             notes: Vec::new(),
             previous: Vec::new(),
             pending,
@@ -331,7 +327,6 @@ impl App {
                 Ok(loaded) => Some(loaded),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => Some(Loaded {
-                    context: String::new(),
                     result: Err("The request stopped.".into()),
                 }),
             },
@@ -343,9 +338,6 @@ impl App {
     }
 
     fn apply(&mut self, loaded: Loaded) {
-        if !loaded.context.is_empty() {
-            self.context = Some(loaded.context);
-        }
         self.pending = None;
         match loaded.result {
             Ok(choices) => {
@@ -582,7 +574,6 @@ impl App {
         self.view.notice = None;
         self.pending = Some(spawn(
             self.request.clone(),
-            self.context.clone(),
             self.notes.clone(),
             self.previous.clone(),
         ));
@@ -596,7 +587,6 @@ impl App {
         self.view.notice = None;
         self.pending = Some(spawn(
             self.request.clone(),
-            self.context.clone(),
             self.notes.clone(),
             self.previous.clone(),
         ));
@@ -613,17 +603,11 @@ impl App {
     }
 }
 
-fn spawn(
-    request: String,
-    context: Option<String>,
-    notes: Vec<String>,
-    previous: Vec<Choice>,
-) -> Receiver<Loaded> {
+fn spawn(request: String, notes: Vec<String>, previous: Vec<Choice>) -> Receiver<Loaded> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let context = context.unwrap_or_else(context::capture_text);
-        let result = interpret::ask(&request, &context, &notes, &previous);
-        let _ = tx.send(Loaded { context, result });
+        let result = interpret::ask(&request, &notes, &previous);
+        let _ = tx.send(Loaded { result });
     });
     rx
 }
