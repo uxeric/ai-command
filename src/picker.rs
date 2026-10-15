@@ -151,8 +151,8 @@ struct Session {
     saved_stdout: SavedStdout,
 }
 
-/// stdout is a pipe when the shell captures the chosen command. The card has
-/// to borrow the tty for that time, then give the pipe back.
+/// stdout is a pipe when the shell captures the chosen command. The card
+/// borrows the tty for that time, then gives the pipe back.
 struct SavedStdout {
     fd: libc::c_int,
 }
@@ -164,7 +164,7 @@ impl SavedStdout {
         if saved < 0 {
             return Err(io::Error::last_os_error());
         }
-        let tty = std::fs::File::open("/dev/tty")?;
+        let tty = open_terminal()?;
         let rc = unsafe { libc::dup2(tty.as_raw_fd(), libc::STDOUT_FILENO) };
         if rc < 0 {
             unsafe { libc::close(saved) };
@@ -172,6 +172,18 @@ impl SavedStdout {
         }
         Ok(Self { fd: saved })
     }
+}
+
+/// The terminal, opened for reading and writing.
+///
+/// A read-only replacement looks like a successful write: Rust turns EBADF
+/// on stdout into `Ok`. The cursor query would then never leave the process,
+/// and the read would time out.
+fn open_terminal() -> io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
 }
 
 impl Drop for SavedStdout {
@@ -1426,6 +1438,29 @@ mod tests {
             })
             .map(|line| line.trim_end().to_string())
             .collect()
+    }
+
+    #[test]
+    fn the_terminal_borrowed_for_the_card_is_writable() {
+        let file = match open_terminal() {
+            Ok(file) => file,
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::ENXIO) | Some(libc::ENOTTY) | Some(libc::ENODEV)
+                ) =>
+            {
+                return;
+            }
+            Err(error) => panic!("{error}"),
+        };
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_ne!(
+            flags & libc::O_ACCMODE,
+            libc::O_RDONLY,
+            "a read-only stdout swallows the cursor query"
+        );
     }
 
     fn marker_color(buf: &Buffer) -> Color {
