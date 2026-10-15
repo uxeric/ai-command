@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="14" viewBox="0 0 1000 14" preserveAspectRatio="none" role="img" aria-label="">
+<defs>
+<style>.pulse{animation:run 5s linear infinite}@keyframes run{from{transform:translateX(-280px)}to{transform:translateX(1000px)}}@media (prefers-reduced-motion:reduce){.pulse{animation:none;opacity:0}}</style>
+<linearGradient id="line" x1="0" x2="1"><stop offset="0" stop-color="#f6c445" stop-opacity="0"/><stop offset=".22" stop-color="#f6c445"/><stop offset=".5" stop-color="#ff2a6d"/><stop offset=".78" stop-color="#29f0ff"/><stop offset="1" stop-color="#29f0ff" stop-opacity="0"/></linearGradient>
+<linearGradient id="spark" x1="0" x2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0"/><stop offset=".5" stop-color="#ffffff" stop-opacity=".95"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
+<filter id="glow" x="-10%" y="-200%" width="120%" height="500%"><feGaussianBlur stdDeviation="2.5"/></filter>
+</defs>
+<rect x="0" y="5" width="1000" height="4" fill="url(#line)" opacity=".45" filter="url(#glow)"/>
+<rect x="0" y="6.5" width="1000" height="1" fill="url(#line)"/>
+<rect class="pulse" x="0" y="5.5" width="280" height="3" fill="url(#spark)" filter="url(#glow)"/>
+</svg>

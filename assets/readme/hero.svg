@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="520" viewBox="0 0 920 520" role="img" aria-label="AI Command shows two readings for a merge. merge into test keeps dev. merge and delete dev removes the branch. A clarify field sits under the ice command. Nothing runs.">
+<defs>
+<style>
+text{font-family:ui-monospace,'JetBrains Mono',SFMono-Regular,Menlo,Consolas,monospace}
+.sweep{animation:scan 3.6s ease-in-out infinite}
+.caret{animation:blink 1.05s steps(1) infinite}
+@keyframes scan{0%{transform:translateX(-220px);opacity:0}18%{opacity:.85}55%{opacity:.35}100%{transform:translateX(640px);opacity:0}}
+@keyframes blink{0%,46%{opacity:1}50%,100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){
+  .sweep{animation:none;opacity:0}
+  .caret{animation:none;opacity:1}
+}
+</style>
+<linearGradient id="wash" x1="0" x2="1">
+<stop offset="0" stop-color="#ff2a6d" stop-opacity=".0"/>
+<stop offset=".35" stop-color="#29f0ff" stop-opacity=".55"/>
+<stop offset="1" stop-color="#29f0ff" stop-opacity="0"/>
+</linearGradient>
+<clipPath id="row"><rect x="78" y="214" width="764" height="36" rx="4"/></clipPath>
+</defs>
+<rect width="920" height="520" fill="#07060f"/>
+<rect x="20" y="16" width="880" height="488" rx="18" fill="#0c0a16" stroke="#ff2a6d" stroke-opacity=".45"/>
+<rect x="20" y="16" width="880" height="52" rx="18" fill="#120e1c"/>
+<rect x="20" y="50" width="880" height="18" fill="#120e1c"/>
+<circle cx="48" cy="42" r="6" fill="#ff2a6d"/>
+<circle cx="70" cy="42" r="6" fill="#f6c445"/>
+<circle cx="92" cy="42" r="6" fill="#3dff9a"/>
+<text x="116" y="48" fill="#e8e6f2" font-size="15">AI Command</text>
+<text x="460" y="48" fill="#6e6a82" font-size="14" text-anchor="middle">~/app</text>
+<text x="868" y="48" fill="#3dff9a" font-size="13" text-anchor="end">fork</text>
+
+<rect x="70" y="96" width="780" height="360" rx="12" fill="#07060f" stroke="#29f0ff" stroke-opacity=".55"/>
+<text x="96" y="118" fill="#ff2a6d" font-size="13" font-weight="700">AI Command</text>
+<text x="96" y="168" fill="#e8e6f2" font-size="16">git command to merge dev into test</text>
+<line x1="96" y1="188" x2="824" y2="188" stroke="#6e6a82" stroke-opacity=".45"/>
+
+<rect x="78" y="214" width="764" height="36" rx="4" fill="#3a1432"/>
+<g clip-path="url(#row)"><rect class="sweep" x="78" y="214" width="180" height="36" fill="url(#wash)"/></g>
+<text x="96" y="238" fill="#ff2a6d" font-size="16" font-weight="700">▶</text>
+<text x="124" y="238" fill="#e8e6f2" font-size="16" font-weight="700">merge into test</text>
+<text x="824" y="238" fill="#29f0ff" font-size="15" text-anchor="end">brings dev's commits into test and keeps dev</text>
+
+<text x="124" y="286" fill="#e8e6f2" font-size="16">merge and delete dev</text>
+<text x="824" y="286" fill="#6e6a82" font-size="15" text-anchor="end">merges into test, then deletes the dev branch</text>
+
+<text x="124" y="338" fill="#29f0ff" font-size="15" font-weight="700">git checkout test &amp;&amp; git merge dev</text>
+
+<rect x="86" y="364" width="748" height="36" rx="6" fill="#2a2210"/>
+<text x="104" y="388" fill="#f6c445" font-size="16" font-weight="700">❯</text>
+<text x="132" y="388" fill="#6e6a82" font-size="16">clarify</text>
+<rect class="caret" x="214" y="372" width="10" height="18" fill="#f6c445"/>
+
+<text x="96" y="432" fill="#e8e6f2" font-size="13">↑↓  move</text>
+<text x="210" y="432" fill="#6e6a82" font-size="13">enter  place</text>
+<text x="360" y="432" fill="#6e6a82" font-size="13">z  clarify</text>
+<text x="490" y="432" fill="#6e6a82" font-size="13">esc  cancel</text>
+</svg>

@@ -1,0 +1,27 @@
+[package]
+name = "cmd"
+version = "0.1.0"
+edition = "2021"
+description = "AI Command turns a plain-language request into a shell command and places it on the prompt"
+license = "MIT"
+repository = "https://github.com/uxeric/ai-command"
+rust-version = "1.88"
+
+[[bin]]
+name = "cmd"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tachyonfx = "0.25"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+unicode-width = "0.2"
+ureq = { version = "2.12", default-features = false, features = ["json", "tls"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
