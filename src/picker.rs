@@ -1,26 +1,27 @@
-//! The choice card.
+//! The choice card, drawn under the prompt.
 //!
-//! Three channels, then a clarify field. A sure reading leaves the extra
-//! channels dark and marks the pointer in leaf. A fork marks it in hot.
-//! The command sits in ice under the readings. The card decrypts in once.
-//! Moving the pointer sweeps that row. Nothing here runs the command.
+//! It takes a few rows of the terminal you are already in. It does not take
+//! the screen. Three channels, then a clarify field. A sure reading leaves
+//! the extra channels dark and marks the pointer in leaf. A fork marks it in
+//! hot. The command sits in ice under the readings. The card decrypts in
+//! once. Moving the pointer sweeps that row. When you choose, the band is
+//! erased and the cursor is back where the shell left it. Nothing here runs
+//! the command.
 
-use std::io;
+use std::io::{self, Stdout, Write};
+use std::os::fd::AsRawFd;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::crossterm::{cursor, execute};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::Frame;
-use ratatui::Terminal;
+use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::interpret::{self, Choice};
@@ -94,6 +95,7 @@ struct Slots {
     preview: Option<Rect>,
     clarify: Option<Rect>,
     hints: Option<Rect>,
+    promise: Option<Rect>,
     request: Option<Rect>,
     rule: Option<Rect>,
 }
@@ -106,6 +108,7 @@ impl Slots {
             preview: None,
             clarify: None,
             hints: None,
+            promise: None,
             request: None,
             rule: None,
         }
@@ -130,6 +133,7 @@ struct Flags {
     list_rows: u16,
     preview: bool,
     hints: bool,
+    promise: bool,
 }
 
 /// Show the card and return the command to place, or `None` when the person cancels.
@@ -142,43 +146,79 @@ pub fn run(request: &str) -> Result<Option<String>, String> {
 }
 
 struct Session {
-    terminal: Terminal<CrosstermBackend<std::fs::File>>,
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+    /// Restored after the terminal, so the card is erased on the tty first.
+    saved_stdout: SavedStdout,
+}
+
+/// stdout is a pipe when the shell captures the chosen command. The card has
+/// to borrow the tty for that time, then give the pipe back.
+struct SavedStdout {
+    fd: libc::c_int,
+}
+
+impl SavedStdout {
+    fn to_tty() -> io::Result<Self> {
+        let _ = std::io::stdout().flush();
+        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        if saved < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let tty = std::fs::File::open("/dev/tty")?;
+        let rc = unsafe { libc::dup2(tty.as_raw_fd(), libc::STDOUT_FILENO) };
+        if rc < 0 {
+            unsafe { libc::close(saved) };
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { fd: saved })
+    }
+}
+
+impl Drop for SavedStdout {
+    fn drop(&mut self) {
+        unsafe {
+            libc::dup2(self.fd, libc::STDOUT_FILENO);
+            libc::close(self.fd);
+        }
+    }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen,
-            cursor::Show
-        );
+        // Keep the saved descriptor alive until the fields drop.
+        let _kept = &self.saved_stdout;
+        let top = self.terminal.get_frame().area().as_position();
+        let backend = self.terminal.backend_mut();
+        let _ = backend.set_cursor_position(top);
+        let _ = backend.clear_region(ClearType::AfterCursor);
+        let _ = backend.set_cursor_position(top);
+        let _ = backend.show_cursor();
+        let _ = Backend::flush(backend);
         let _ = disable_raw_mode();
     }
 }
 
 fn open() -> io::Result<Session> {
     attach_stdin()?;
-    let mut tty = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")?;
-    execute!(tty, EnterAlternateScreen)?;
-    if let Err(error) = enable_raw_mode() {
-        let _ = execute!(tty, LeaveAlternateScreen);
-        return Err(error);
-    }
-    let mut terminal = match Terminal::new(CrosstermBackend::new(tty)) {
+    let saved_stdout = SavedStdout::to_tty()?;
+    enable_raw_mode()?;
+    let mut terminal = match Terminal::with_options(
+        CrosstermBackend::new(std::io::stdout()),
+        TerminalOptions {
+            viewport: Viewport::Inline(inline_rows()),
+        },
+    ) {
         Ok(terminal) => terminal,
         Err(error) => {
             let _ = disable_raw_mode();
-            if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-                let _ = execute!(tty, LeaveAlternateScreen, cursor::Show);
-            }
             return Err(error);
         }
     };
     let _ = execute!(terminal.backend_mut(), cursor::Hide);
-    Ok(Session { terminal })
+    Ok(Session {
+        terminal,
+        saved_stdout,
+    })
 }
 
 fn attach_stdin() -> io::Result<()> {
@@ -615,28 +655,20 @@ fn spawn(request: String, notes: Vec<String>, previous: Vec<Choice>) -> Receiver
 fn render(frame: &mut Frame, view: &View, color: bool) -> Slots {
     let area = frame.area();
     let buf = frame.buffer_mut();
-    if color {
-        paint_room(buf, area);
-    }
     if area.width < 16 || area.height < 4 {
-        let message = "make the terminal taller";
-        let x = area.x + area.width.saturating_sub(message.len() as u16) / 2;
         write_at(
             buf,
-            x,
+            area.x + 1,
             area.y,
             area.right(),
-            message,
-            inked(color, ink::GHOST, room_bg(area.y), false, false),
+            "make the terminal taller",
+            inked(color, ink::GHOST, ink::VOID, false, false),
         );
         return Slots::empty();
     }
     let (card, flags) = plan(area);
     let slots = place_slots(card, &flags);
     paint_card(buf, card, color);
-    if color {
-        paint_shadow(buf, card);
-    }
     if let Some(rect) = slots.request {
         let bg = card_bg(card, rect.y, color);
         write_at(
@@ -668,18 +700,18 @@ fn render(frame: &mut Frame, view: &View, color: bool) -> Slots {
     if let Some(rect) = slots.hints {
         paint_hints(buf, card, rect, view, color);
     }
-    let footer_y = area.bottom().saturating_sub(1);
-    if footer_y > card.bottom() {
-        let text = "nothing runs until you press enter on the prompt";
-        let fitted = fit(text, area.width as usize);
-        let x = area.x + area.width.saturating_sub(fitted.width() as u16) / 2;
+    if let Some(rect) = slots.promise {
+        let bg = card_bg(card, rect.y, color);
         write_at(
             buf,
-            x,
-            footer_y,
-            area.right(),
-            &fitted,
-            inked(color, ink::GHOST, room_bg(footer_y), false, false),
+            rect.x + 1,
+            rect.y,
+            rect.right().saturating_sub(1),
+            &fit(
+                "nothing runs until you press enter on the prompt",
+                width_between(rect.x + 1, rect.right().saturating_sub(1)),
+            ),
+            inked(color, ink::GHOST, bg, false, false),
         );
     }
     slots
@@ -959,20 +991,27 @@ fn paint_hints(buf: &mut Buffer, card: Rect, rect: Rect, view: &View, color: boo
     }
 }
 
-fn plan(area: Rect) -> (Rect, Flags) {
-    let mut flags = Flags {
+fn full_flags() -> Flags {
+    Flags {
         request: true,
         rule: true,
         list_rows: 3,
         preview: true,
         hints: true,
-    };
+        promise: true,
+    }
+}
+
+/// Rows the inline viewport reserves. Matches the card with every row showing.
+fn inline_rows() -> u16 {
+    card_height(&full_flags())
+}
+
+fn plan(area: Rect) -> (Rect, Flags) {
+    let mut flags = full_flags();
     while card_height(&flags) > area.height && shrink(&mut flags) {}
     let height = card_height(&flags).min(area.height).max(2);
-    let width = area.width.saturating_sub(2).clamp(1, 84).min(area.width);
-    let x = area.x + (area.width - width) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    (Rect::new(x, y, width, height), flags)
+    (Rect::new(area.x, area.y, area.width.max(1), height), flags)
 }
 
 fn card_height(flags: &Flags) -> u16 {
@@ -982,9 +1021,14 @@ fn card_height(flags: &Flags) -> u16 {
         + u16::from(flags.preview)
         + 1
         + u16::from(flags.hints)
+        + u16::from(flags.promise)
 }
 
 fn shrink(flags: &mut Flags) -> bool {
+    if flags.promise {
+        flags.promise = false;
+        return true;
+    }
     if flags.hints {
         flags.hints = false;
         return true;
@@ -1037,20 +1081,8 @@ fn place_slots(card: Rect, flags: &Flags) -> Slots {
     slots.preview = take(flags.preview);
     slots.clarify = take(true);
     slots.hints = take(flags.hints);
+    slots.promise = take(flags.promise);
     slots
-}
-
-fn paint_room(buf: &mut Buffer, area: Rect) {
-    for y in area.y..area.bottom() {
-        let bg = if (y - area.y).is_multiple_of(2) {
-            ink::VOID
-        } else {
-            ink::SCAN
-        };
-        for x in area.x..area.right() {
-            put(buf, x, y, " ", Style::default().bg(bg));
-        }
-    }
 }
 
 fn paint_card(buf: &mut Buffer, card: Rect, color: bool) {
@@ -1127,21 +1159,6 @@ fn paint_card(buf: &mut Buffer, card: Rect, color: bool) {
             "╺",
             inked(color, ink::ICE, bg, true, false),
         );
-    }
-}
-
-fn paint_shadow(buf: &mut Buffer, card: Rect) {
-    let style = Style::default().bg(ink::SHADOW);
-    let bounds = buf.area;
-    for y in card.y + 1..=card.bottom() {
-        if card.right() < bounds.right() && y < bounds.bottom() {
-            put(buf, card.right(), y, " ", style);
-        }
-    }
-    for x in card.x + 1..=card.right() {
-        if x < bounds.right() && card.bottom() < bounds.bottom() {
-            put(buf, x, card.bottom(), " ", style);
-        }
     }
 }
 
@@ -1307,14 +1324,6 @@ fn card_bg(card: Rect, y: u16, color: bool) -> Color {
     }
 }
 
-fn room_bg(y: u16) -> Color {
-    if y.is_multiple_of(2) {
-        ink::VOID
-    } else {
-        ink::SCAN
-    }
-}
-
 fn inked(color: bool, fg: Color, bg: Color, bold: bool, reverse: bool) -> Style {
     let mut style = Style::default();
     if color {
@@ -1472,6 +1481,36 @@ mod tests {
             !text.contains("branch -d"),
             "the other command stays off the card until it is chosen:\n{text}"
         );
+    }
+
+    #[test]
+    fn the_card_is_a_short_band_across_the_terminal() {
+        let buf = painted(&fork(0));
+        let lines = lines(&buf);
+        let text = lines.join("\n");
+        let band = card_height(&full_flags()) as usize;
+        assert!(
+            lines[0].contains("AI Command"),
+            "the wordmark sits on the first row under the prompt:\n{text}"
+        );
+        assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "┏");
+        assert_eq!(
+            buf.cell((buf.area.width - 1, 0)).unwrap().symbol(),
+            "┓",
+            "the band uses the full width"
+        );
+        let promise = lines
+            .iter()
+            .position(|line| line.contains("nothing runs until you press enter on the prompt"))
+            .expect(&text);
+        assert!(promise < band, "{text}");
+        for y in band as u16..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = buf.cell((x, y)).unwrap();
+                assert_eq!(cell.symbol(), " ", "row {y} was drawn");
+                assert_eq!(cell.bg, Color::Reset, "row {y} was filled");
+            }
+        }
     }
 
     #[test]

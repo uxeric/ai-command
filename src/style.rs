@@ -29,7 +29,6 @@ pub mod ink {
     pub const FIELD: Color = Color::Rgb(0x14, 0x10, 0x22);
     pub const FIELD_ON: Color = Color::Rgb(0x2A, 0x22, 0x10);
     pub const KEYCAP: Color = Color::Rgb(0x2E, 0x26, 0x56);
-    pub const SHADOW: Color = Color::Rgb(0x04, 0x03, 0x08);
 }
 
 pub fn stderr_color() -> bool {
